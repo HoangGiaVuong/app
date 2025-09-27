@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+
+  # 1. Cơ sở dữ liệu PostgreSQL
+  db:
+    image: postgres:14-alpine
+    container_name: laptop_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "5432:5432" # Mở cổng 5432 ra bên ngoài (Chỉ dùng để debug, có thể bỏ)
+    volumes:
+      # Volume để lưu trữ dữ liệu database vĩnh viễn
+      - db_data:/var/lib/postgresql/data
+      # Script khởi tạo database sẽ được chạy khi container được tạo lần đầu
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 2. Ứng dụng Web Instance 1 (Đảm bảo Scale-out)
+  app1:
+    build: . # Build từ Dockerfile trong thư mục hiện tại
+    container_name: laptop_app_1
+    env_file:
+      - .env
+    environment:
+      INSTANCE_ID: ${INSTANCE_1_ID}
+    # Đợi database sẵn sàng trước khi khởi động ứng dụng
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # 3. Ứng dụng Web Instance 2 (Đảm bảo Scale-out)
+  app2:
+    build: .
+    container_name: laptop_app_2
+    env_file:
+      - .env
+    environment:
+      INSTANCE_ID: ${INSTANCE_2_ID}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # 4. Web Server và Load Balancer (Nginx)
+  web:
+    image: nginx:alpine
+    container_name: laptop_web_loadbalancer
+    ports:
+      - "80:80" # Mở cổng 80 (HTTP) ra bên ngoài
+    volumes:
+      # Mount file cấu hình Nginx cục bộ vào trong container
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - app1 # Phụ thuộc vào cả hai instance của ứng dụng
+      - app2
+
+volumes:
+  db_data: # Định nghĩa volume để lưu trữ dữ liệu DB
