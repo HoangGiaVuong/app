@@ -13,3 +13,4 @@ DB_PORT="5432"
 
 # Application Configuration
 APP_PORT="3000"
+CPU_CONSUME_MS="2000"

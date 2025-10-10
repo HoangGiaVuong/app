@@ -4,8 +4,11 @@ const { Pool } = require('pg');
 
 // Khởi tạo ứng dụng Express
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 const instanceId = process.env.INSTANCE_ID || 'UNKNOWN'; // Dùng để xác định instance đang phục vụ request
+
+// CPU consume configuration (ms). Can be set via env or query param on /heavy
+const CPU_CONSUME_MS = parseInt(process.env.CPU_CONSUME_MS || '2000', 10);
 
 // Cấu hình kết nối PostgreSQL
 const pool = new Pool({
@@ -13,7 +16,7 @@ const pool = new Pool({
     host: process.env.DB_HOST || 'db', // Tên service database trong docker-compose
     database: process.env.DB_NAME || 'laptop_store',
     password: process.env.DB_PASSWORD || 'password',
-    port: 5432,
+    port: process.env.DB_PORT ? parseInt(process.env.DB_PORT, 10) : 5432,
 });
 
 // Thử kết nối DB khi khởi động
@@ -39,6 +42,24 @@ async function getLaptops() {
         console.error('Lỗi truy vấn database:', err.stack);
         return [];
     }
+}
+
+/**
+ * Hàm thực hiện công việc tiêu tốn CPU trong một khoảng thời gian (busy-wait doing math)
+ * @param {number} targetMs - số mili giây muốn tiêu tốn CPU
+ */
+function heavyWork(targetMs) {
+    const start = Date.now();
+    let acc = 0;
+    // busy loop doing some math to keep CPU busy
+    while (Date.now() - start < targetMs) {
+        // some non-trivial math to avoid trivial optimization
+        for (let i = 0; i < 100; i++) {
+            acc += Math.sqrt((i + acc) % 1000) * Math.sin(i + acc);
+        }
+    }
+    // return a value to avoid optimizer removing the loop
+    return acc;
 }
 
 // Route chính để hiển thị danh sách sản phẩm
@@ -106,6 +127,33 @@ app.get('/products', async (req, res) => {
 // Route kiểm tra sức khỏe của ứng dụng (dùng cho Load Balancer)
 app.get('/health', (req, res) => {
     res.status(200).send({ status: 'OK', instance: instanceId });
+});
+
+// New heavy CPU endpoint that also queries the DB and returns JSON
+// Usage:
+//   GET /heavy                -> uses CPU_CONSUME_MS env value (default 2000ms)
+//   GET /heavy?ms=5000        -> override and consume ~5000ms
+// Response includes: status, instance, requestedMs, elapsedMs, workChecksum, laptops
+app.get('/heavy', async (req, res) => {
+    const requestedMs = Math.max(0, parseInt(req.query.ms || CPU_CONSUME_MS, 10));
+
+    const start = Date.now();
+
+    // Query DB first (so the DB query runs before we block the event loop)
+    const laptops = await getLaptops();
+
+    // Perform CPU-intensive work (busy loop)
+    const acc = heavyWork(requestedMs);
+    const elapsed = Date.now() - start;
+
+    res.json({
+        status: 'OK',
+        instance: instanceId,
+        requestedMs,
+        elapsedMs: elapsed,
+        workChecksum: typeof acc === 'number' ? Number(acc.toFixed ? acc.toFixed(3) : acc) : String(acc),
+        laptops
+    });
 });
 
 app.listen(port, () => {
